@@ -86,6 +86,10 @@ class SimplePhilGEPSScraper:
 
             # Pre-fill credentials
             try:
+                # Select "Merchant" from dropdown
+                self.page.select_option('select[name="userType"], select#userType', 'Merchant')
+                print("✅ Selected Merchant")
+
                 username = os.getenv('PHILGEPS_USERNAME', 'jdeleon60')
                 password = os.getenv('PHILGEPS_PASSWORD', 'Merritmed#01')
 
