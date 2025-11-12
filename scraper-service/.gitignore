@@ -35,3 +35,8 @@ Thumbs.db
 # Test outputs
 test_output/
 screenshots/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
