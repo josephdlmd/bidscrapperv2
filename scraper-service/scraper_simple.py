@@ -109,7 +109,7 @@ class SimplePhilGEPSScraper:
                 print("✅ Credentials pre-filled")
 
                 # Click reCAPTCHA checkbox
-                self.page.wait_for_timeout(2000)  # Wait 2 seconds for iframe to load
+                self.page.wait_for_timeout(2000)
 
                 # Find and click reCAPTCHA checkbox in iframe
                 frames = self.page.frames
@@ -117,7 +117,6 @@ class SimplePhilGEPSScraper:
 
                 for frame in frames:
                     try:
-                        # Try to find checkbox in this frame
                         checkbox = frame.locator('.recaptcha-checkbox-border').first
                         if checkbox.is_visible():
                             checkbox.click()
@@ -130,7 +129,7 @@ class SimplePhilGEPSScraper:
                 if not recaptcha_clicked:
                     print("⚠️ Could not auto-click reCAPTCHA - please click it manually")
 
-                # Wait for reCAPTCHA to auto-validate (usually 2-3 seconds)
+                # Wait for reCAPTCHA to auto-validate
                 self.page.wait_for_timeout(4000)
                 print("✅ reCAPTCHA validated")
 
@@ -140,6 +139,14 @@ class SimplePhilGEPSScraper:
 
                 # Wait for navigation
                 self.page.wait_for_timeout(5000)
+
+                # Navigate directly to the bid opportunities page
+                self.page.goto(
+                    "https://philgeps.gov.ph/BulletinBoard/view_more_current_oppourtunities",
+                    timeout=60000,
+                    wait_until="networkidle"
+                )
+                print("✅ Navigated to bid opportunities page")
 
             except Exception as e:
                 print(f"⚠️ Could not complete auto-login: {e}")
