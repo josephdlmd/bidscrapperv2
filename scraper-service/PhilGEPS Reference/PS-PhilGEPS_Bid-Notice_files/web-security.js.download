@@ -1,0 +1,93 @@
+/* start code for f12 disable   
+$(document).keydown(function(e) 
+{
+	if (e.keyCode == 85 && e.ctrlKey){
+           return false;
+        }
+	if(e.keyCode === 123){
+             return false;
+        }
+	if(e.keyCode === 116){
+             return false;
+        }
+});
+/* end code */
+	 
+	 
+	 
+	 
+/* write in document.ready start code for source disable */
+/*
+(function () {
+    if (!$('body').hasClass('debug_mode')) {
+        var _z = console;
+        Object.defineProperty(window, "console", {
+            get: function () {
+                if ((window && window._z && window._z._commandLineAPI) || {}) {
+                    throw "Nice trick! but not permitted!";
+                }
+                return _z;
+            },
+            set: function (val) {
+                _z = val;
+            }
+        });
+    }
+})();*/
+
+/* end code */
+
+
+/* prevent same disabled Back, Forward pages?*/		 
+window.history.forward();
+	function noBack() { 
+		window.history.forward();
+	}
+/* end code */
+
+
+
+	
+/* prevent same website open multiple tab pages?*/
+function logout_open_new_tab_ajax()
+{  
+	nxtAlert.render('PhilGEPS','<b>Your Session has expired</b> </br>For security reasons, we have disabled Back, Forward and New tab of the browser and if the browser window is idle for a long time. Also, the session will expire automatically. If the problem persists, please try again after clearing the Temporary Files from your web browser. ','danger',call_logout_fun); 
+}
+
+function call_logout_fun()
+{	   
+
+  window.location.replace(site_url);
+
+	/* $.ajax({
+		type: "POST", 
+		url: site_url+ "/users/logout___/new_tab",
+		cache: true,
+		dataType: "json", 
+		success: function(data)
+		{ 
+			if (data == '1')
+			{ 
+				
+			 	window.location = href + "/indexes/new_tab_open_error";
+				 
+			}
+		}
+	}); */ 
+
+} 	
+
+// Broad cast that your're opening a page.
+localStorage.openpages = Date.now();
+var onLocalStorageEvent = function(e){
+if(e.key == "openpages"){
+// Listen if anybody else opening the same page!
+localStorage.page_available = Date.now();
+}
+if(e.key == "page_available"){
+logout_open_new_tab_ajax()
+}
+};
+window.addEventListener('storage', onLocalStorageEvent, false);
+		
+/* prevent same website open multiple tab pages?*/
