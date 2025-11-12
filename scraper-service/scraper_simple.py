@@ -100,10 +100,31 @@ class SimplePhilGEPSScraper:
                 self.page.fill('input[name="username"], input#username', username)
                 self.page.fill('input[name="password"], input#password', password)
                 print("✅ Credentials pre-filled")
+
+                # Click reCAPTCHA checkbox
+                self.page.wait_for_timeout(1000)  # Wait 1 second
+                self.page.click('.recaptcha-checkbox-border')
+                print("✅ Clicked reCAPTCHA checkbox")
+
+                # Wait a bit for reCAPTCHA to process
+                self.page.wait_for_timeout(2000)
+
             except Exception as e:
                 print(f"⚠️ Could not pre-fill: {e}")
 
-            input("\n👉 Press ENTER after you've successfully logged in...")
+            print("\n⏳ Waiting for reCAPTCHA verification...")
+            print("   If image challenge appears, solve it now")
+            print("   Then the script will auto-click Login")
+
+            input("\n👉 Press ENTER after solving any reCAPTCHA challenge...")
+
+            # Auto-click Login button
+            try:
+                self.page.click('input[type="submit"][value="Log In"]')
+                print("✅ Clicked Login button")
+                self.page.wait_for_timeout(3000)  # Wait for navigation
+            except Exception as e:
+                print(f"⚠️ Could not click login: {e}")
 
             print("✅ Login session saved in browser profile!")
 
