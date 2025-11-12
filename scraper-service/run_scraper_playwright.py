@@ -4,6 +4,9 @@ Uses saved session from first_time setup
 """
 import asyncio
 import os
+import subprocess
+import sys
+from pathlib import Path
 from scraper.philgeps_scraper_playwright import PhilGEPSScraper
 
 os.environ['PHILGEPS_USERNAME'] = 'jdeleon60'
@@ -14,6 +17,22 @@ async def main():
     print("="*80)
     print("PhilGEPS Scraper V2 - Automated Run (Playwright)")
     print("="*80)
+
+    # Check if database exists, if not create it
+    db_path = Path('philgeps_local.db')
+    if not db_path.exists():
+        print("\n⚠️  Database not found. Creating database...")
+        try:
+            result = subprocess.run([sys.executable, 'setup_local_db_v2.py'],
+                                  capture_output=True, text=True, check=True)
+            print(result.stdout)
+            print("✅ Database created successfully!\n")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to create database: {e.stderr}")
+            return
+        except FileNotFoundError:
+            print("❌ setup_local_db_v2.py not found. Please create database manually.")
+            return
 
     scraper = PhilGEPSScraper()
 

@@ -4,10 +4,10 @@ Scrapes bid opportunities from PhilGEPS with reCAPTCHA handling
 """
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-import asyncpg
 import asyncio
 import os
 import json
+import sqlite3
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -20,12 +20,13 @@ class PhilGEPSScraper:
     Uses persistent browser profile to maintain trust and avoid CAPTCHA challenges
     """
 
-    def __init__(self, profile_dir: str = "./browser_profile"):
+    def __init__(self, profile_dir: str = "./browser_profile", db_path: str = "./philgeps_local.db"):
         """
         Initialize scraper with persistent browser profile
 
         Args:
             profile_dir: Directory to store browser profile data
+            db_path: Path to SQLite database
         """
         self.profile_dir = Path(profile_dir)
         self.profile_dir.mkdir(exist_ok=True)
@@ -35,7 +36,23 @@ class PhilGEPSScraper:
         self.page = None
         self.logged_in = False
 
+        # Database connection
+        self.db_path = db_path
+        self.db_conn = None
+        self._init_database()
+
         print(f"🔧 Initialized scraper with profile: {self.profile_dir}")
+        print(f"🗄️  Database: {self.db_path}")
+
+    def _init_database(self):
+        """Initialize database connection"""
+        try:
+            self.db_conn = sqlite3.connect(self.db_path)
+            self.db_conn.row_factory = sqlite3.Row  # Access columns by name
+            print("✅ Database connected")
+        except Exception as e:
+            print(f"⚠️  Database connection error: {e}")
+            self.db_conn = None
 
     async def _ensure_browser(self):
         """Ensure browser context is initialized"""
@@ -422,9 +439,27 @@ class PhilGEPSScraper:
                         result['detailed_bids'] += 1
                         print(f"   ✓ Budget: {detail.get('approved_budget', 'N/A')}")
 
+                        # Save line items
+                        if detail.get('line_items'):
+                            self.save_line_items(bid['reference_number'], detail['line_items'])
+
+                    # Save bid to database (whether we got details or not)
+                    if self.save_bid(bid):
+                        result['saved_count'] += 1
+                        print(f"   💾 Saved to database")
+                    else:
+                        print(f"   ⚠️  Failed to save to database")
+
                     await asyncio.sleep(1)  # Rate limiting
+            else:
+                # Even without details, save basic info
+                print(f"\n💾 Saving {len(bid_list)} bids to database...")
+                for bid in bid_list:
+                    if self.save_bid(bid):
+                        result['saved_count'] += 1
 
             result['end_time'] = datetime.now().isoformat()
+            print(f"\n✅ Scraping complete! Saved {result['saved_count']} bids to database")
             return result
 
         except Exception as e:
@@ -436,9 +471,187 @@ class PhilGEPSScraper:
                 'total_bids': 0
             }
 
+    def bid_exists(self, reference_number: str) -> bool:
+        """Check if bid already exists in database"""
+        if not self.db_conn:
+            return False
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM bid_opportunities WHERE reference_number = ?",
+                (reference_number,)
+            )
+            return cursor.fetchone() is not None
+        except Exception as e:
+            print(f"⚠️  Error checking bid existence: {e}")
+            return False
+
+    def save_bid(self, bid: Dict) -> bool:
+        """
+        Save or update bid in database
+
+        Args:
+            bid: Dictionary with bid data
+
+        Returns:
+            bool: True if successful
+        """
+        if not self.db_conn:
+            print("⚠️  No database connection")
+            return False
+
+        try:
+            cursor = self.db_conn.cursor()
+
+            # Check if exists
+            exists = self.bid_exists(bid['reference_number'])
+
+            if exists:
+                # Update existing
+                cursor.execute('''
+                    UPDATE bid_opportunities SET
+                        title = ?,
+                        status = ?,
+                        detail_url = ?,
+                        procurement_mode = ?,
+                        classification = ?,
+                        approved_budget = ?,
+                        publish_date = ?,
+                        closing_date = ?,
+                        agency_name = ?,
+                        delivery_location = ?,
+                        delivery_period = ?,
+                        contact_person = ?,
+                        business_category = ?,
+                        funding_source = ?,
+                        control_number = ?,
+                        scraped_at = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE reference_number = ?
+                ''', (
+                    bid.get('title'),
+                    bid.get('status'),
+                    bid.get('detail_url'),
+                    bid.get('procurement_mode'),
+                    bid.get('classification'),
+                    bid.get('approved_budget'),
+                    bid.get('publish_date'),
+                    bid.get('closing_date'),
+                    bid.get('agency_name'),
+                    bid.get('delivery_location'),
+                    bid.get('delivery_period'),
+                    bid.get('contact_person'),
+                    bid.get('business_category'),
+                    bid.get('funding_source'),
+                    bid.get('control_number'),
+                    datetime.now().isoformat(),
+                    bid['reference_number']
+                ))
+            else:
+                # Insert new
+                cursor.execute('''
+                    INSERT INTO bid_opportunities (
+                        reference_number, title, status, detail_url,
+                        procurement_mode, classification, approved_budget,
+                        publish_date, closing_date, agency_name,
+                        delivery_location, delivery_period, contact_person,
+                        business_category, funding_source, control_number,
+                        scraped_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    bid['reference_number'],
+                    bid.get('title'),
+                    bid.get('status'),
+                    bid.get('detail_url'),
+                    bid.get('procurement_mode'),
+                    bid.get('classification'),
+                    bid.get('approved_budget'),
+                    bid.get('publish_date'),
+                    bid.get('closing_date'),
+                    bid.get('agency_name'),
+                    bid.get('delivery_location'),
+                    bid.get('delivery_period'),
+                    bid.get('contact_person'),
+                    bid.get('business_category'),
+                    bid.get('funding_source'),
+                    bid.get('control_number'),
+                    datetime.now().isoformat()
+                ))
+
+            self.db_conn.commit()
+            return True
+
+        except Exception as e:
+            print(f"⚠️  Error saving bid {bid.get('reference_number')}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def save_line_items(self, reference_number: str, line_items: List[Dict]) -> bool:
+        """
+        Save line items for a bid
+
+        Args:
+            reference_number: Bid reference number
+            line_items: List of line item dictionaries
+
+        Returns:
+            bool: True if successful
+        """
+        if not self.db_conn or not line_items:
+            return False
+
+        try:
+            cursor = self.db_conn.cursor()
+
+            # Delete existing line items for this bid
+            cursor.execute(
+                "DELETE FROM bid_line_items WHERE reference_number = ?",
+                (reference_number,)
+            )
+
+            # Insert new line items
+            for item in line_items:
+                cursor.execute('''
+                    INSERT INTO bid_line_items (
+                        reference_number, unspsc, lot_name,
+                        lot_description, quantity, unit_of_measure
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    reference_number,
+                    item.get('unspsc'),
+                    item.get('lot_name'),
+                    item.get('description'),
+                    item.get('quantity'),
+                    item.get('unit_of_measure')
+                ))
+
+            self.db_conn.commit()
+            return True
+
+        except Exception as e:
+            print(f"⚠️  Error saving line items for {reference_number}: {e}")
+            return False
+
+    def get_existing_bid_refs(self) -> set:
+        """Get set of existing bid reference numbers for incremental updates"""
+        if not self.db_conn:
+            return set()
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("SELECT reference_number FROM bid_opportunities")
+            return {row[0] for row in cursor.fetchall()}
+        except Exception as e:
+            print(f"⚠️  Error getting existing bids: {e}")
+            return set()
+
     def close(self):
         """Close browser and cleanup resources"""
-        # Playwright cleanup happens async, we'll handle it in __del__ or explicit async close
+        if self.db_conn:
+            self.db_conn.close()
+            print("🗄️  Database connection closed")
         print("📌 Scraper session ended (browser profile saved)")
 
     async def async_close(self):
@@ -447,4 +660,7 @@ class PhilGEPSScraper:
             await self.context.close()
         if self.playwright:
             await self.playwright.stop()
+        if self.db_conn:
+            self.db_conn.close()
+            print("🗄️  Database connection closed")
         print("🔒 Browser closed")
