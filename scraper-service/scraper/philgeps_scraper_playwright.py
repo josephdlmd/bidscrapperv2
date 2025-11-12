@@ -598,7 +598,13 @@ class PhilGEPSScraper:
                         # Merge detail into bid
                         bid.update(detail)
                         result['detailed_bids'] += 1
-                        print(f"   ✓ Budget: {detail.get('approved_budget', 'N/A')}")
+
+                        # Only show budget if it exists
+                        budget = detail.get('approved_budget')
+                        if budget:
+                            print(f"   ✓ Budget: ₱{budget:,.2f}")
+                        else:
+                            print(f"   ℹ️  No budget info")
 
                         # Save line items
                         if detail.get('line_items'):
