@@ -22,15 +22,12 @@ async def first_run():
     print("="*80 + "\n")
 
     async with async_playwright() as p:
-        # Launch visible browser
-        browser = await p.chromium.launch(
+        # Launch visible browser with persistent profile
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir='./browser_profile',  # Save session
             headless=False,  # Visible browser for manual interaction
-            args=['--start-maximized']
-        )
-
-        context = await browser.new_context(
-            viewport=None,
-            user_data_dir='./browser_profile'  # Save session
+            args=['--start-maximized'],
+            viewport=None
         )
 
         page = await context.new_page()
@@ -87,7 +84,6 @@ async def first_run():
 
         finally:
             await context.close()
-            await browser.close()
             print("🔒 Browser closed")
 
 if __name__ == "__main__":
