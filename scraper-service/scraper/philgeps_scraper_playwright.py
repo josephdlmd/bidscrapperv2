@@ -323,22 +323,41 @@ class PhilGEPSScraper:
             # Helper to extract label-value pairs
             async def extract_label_value(label_text: str) -> Optional[str]:
                 try:
-                    # Find label containing the text
+                    # Strategy 1: Find label and get parent's text
                     labels = await self.page.query_selector_all('label')
                     for label in labels:
                         text = await label.inner_text()
                         if label_text.lower() in text.lower():
-                            # Get the next text node after the label
+                            # Get the parent element
                             parent = await label.evaluate_handle('el => el.parentElement')
-                            value = await parent.evaluate('el => el.textContent')
-                            # Remove the label text and clean up
-                            value = value.replace(text, '').strip()
-                            # Remove leading/trailing <br> tags
-                            value = re.sub(r'^<br>|<br>$', '', value).strip()
-                            if value:
+                            parent_text = await parent.evaluate('el => el.textContent')
+
+                            # Remove the label text
+                            value = parent_text.replace(text, '').strip()
+
+                            # Clean up: remove br tags, extra whitespace, newlines
+                            value = re.sub(r'<br\s*/?>', '', value)
+                            value = re.sub(r'\s+', ' ', value)
+                            value = value.strip()
+
+                            if value and value != ':':
+                                print(f"   🔍 Found {label_text} = '{value}'")
                                 return value
-                except:
-                    pass
+
+                    # Strategy 2: Search entire page text for pattern
+                    page_text = await self.page.content()
+                    # Look for pattern: label followed by value
+                    pattern = re.escape(label_text) + r'\s*</label>\s*(?:<br\s*/?>\s*)?([^<\n]+)'
+                    match = re.search(pattern, page_text, re.IGNORECASE)
+                    if match:
+                        value = match.group(1).strip()
+                        if value:
+                            print(f"   🔍 Found (pattern) {label_text} = '{value}'")
+                            return value
+
+                except Exception as e:
+                    print(f"   ⚠️  Error extracting '{label_text}': {e}")
+
                 return None
 
             detail = {
