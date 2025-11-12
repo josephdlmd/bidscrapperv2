@@ -192,9 +192,9 @@ class SimplePhilGEPSScraper:
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
             try:
-                # Go to opportunities page
+                # Go to the correct opportunities page
                 self.page.goto(
-                    "https://philgeps.gov.ph/BulletinBoard/current_oppourtunities",
+                    "https://philgeps.gov.ph/BulletinBoard/view_more_current_oppourtunities",
                     timeout=60000,
                     wait_until="networkidle"
                 )
@@ -203,6 +203,9 @@ class SimplePhilGEPSScraper:
 
                 # Fill in date range filters
                 try:
+                    # Wait for page to fully load
+                    self.page.wait_for_timeout(2000)
+
                     # Fill "Publish Date From"
                     self.page.fill('input#searchPublishDateFrom', date_from_str)
                     print(f"✅ Set date from: {date_from_str}")
@@ -211,16 +214,15 @@ class SimplePhilGEPSScraper:
                     self.page.fill('input#searchPublishDateTo', date_to_str)
                     print(f"✅ Set date to: {date_to_str}")
 
-                    # Submit search (look for search button)
+                    # Wait a moment for form to register
                     self.page.wait_for_timeout(1000)
 
-                    # Try to find and click search/filter button
-                    try:
-                        self.page.click('button[type="submit"], input[type="submit"], button:has-text("Search")')
-                        print("✅ Clicked search button")
-                        self.page.wait_for_timeout(3000)  # Wait for results
-                    except:
-                        print("⚠️ No search button found - results may auto-update")
+                    # Click the search button
+                    self.page.click('button#search[name="search"]')
+                    print("✅ Clicked search button")
+
+                    # Wait for results to load
+                    self.page.wait_for_timeout(5000)
 
                 except Exception as e:
                     print(f"⚠️ Could not set date filters: {e}")
