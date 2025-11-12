@@ -9,8 +9,8 @@ import os
 import json
 import sqlite3
 from pathlib import Path
-from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple
 import re
 
 
@@ -388,13 +388,130 @@ class PhilGEPSScraper:
             print(f"   ❌ Error scraping detail for {reference_number}: {e}")
             return None
 
-    async def run_daily_scrape(self, max_pages: Optional[int] = None, fetch_details: bool = True) -> Dict:
+    def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
+        """Parse date string to datetime object"""
+        if not date_str:
+            return None
+
+        # Try common formats
+        formats = [
+            '%Y-%m-%d',
+            '%m/%d/%Y',
+            '%d/%m/%Y',
+            '%B %d, %Y',
+            '%b %d, %Y',
+            '%Y-%m-%d %H:%M:%S'
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.strptime(date_str.strip(), fmt)
+            except:
+                continue
+        return None
+
+    def filter_bids(
+        self,
+        bids: List[Dict],
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        classifications: Optional[List[str]] = None,
+        budget_min: Optional[float] = None,
+        budget_max: Optional[float] = None,
+        keywords: Optional[List[str]] = None
+    ) -> List[Dict]:
+        """
+        Filter scraped bids based on criteria
+
+        Args:
+            bids: List of bid dictionaries
+            date_from: Filter bids closing after this date (YYYY-MM-DD)
+            date_to: Filter bids closing before this date (YYYY-MM-DD)
+            classifications: List of classifications to include (e.g., ['Goods', 'Civil Works'])
+            budget_min: Minimum budget
+            budget_max: Maximum budget
+            keywords: List of keywords to search in title (case-insensitive)
+
+        Returns:
+            Filtered list of bids
+        """
+        filtered = bids.copy()
+
+        # Filter by closing date range
+        if date_from or date_to:
+            date_from_obj = self._parse_date(date_from) if date_from else None
+            date_to_obj = self._parse_date(date_to) if date_to else None
+
+            def date_filter(bid):
+                closing_date = self._parse_date(bid.get('closing_date'))
+                if not closing_date:
+                    return False
+                if date_from_obj and closing_date < date_from_obj:
+                    return False
+                if date_to_obj and closing_date > date_to_obj:
+                    return False
+                return True
+
+            filtered = [b for b in filtered if date_filter(b)]
+            print(f"   📅 Date filter: {len(filtered)} bids (from {date_from or 'start'} to {date_to or 'end'})")
+
+        # Filter by classification
+        if classifications:
+            classifications_lower = [c.lower() for c in classifications]
+            filtered = [
+                b for b in filtered
+                if b.get('classification') and b['classification'].lower() in classifications_lower
+            ]
+            print(f"   🏷️  Classification filter: {len(filtered)} bids ({', '.join(classifications)})")
+
+        # Filter by budget range
+        if budget_min is not None or budget_max is not None:
+            def budget_filter(bid):
+                budget = bid.get('approved_budget')
+                if budget is None:
+                    return False
+                if budget_min is not None and budget < budget_min:
+                    return False
+                if budget_max is not None and budget > budget_max:
+                    return False
+                return True
+
+            filtered = [b for b in filtered if budget_filter(b)]
+            budget_range = f"₱{budget_min:,.0f} - ₱{budget_max:,.0f}" if budget_min and budget_max else \
+                          f"≥ ₱{budget_min:,.0f}" if budget_min else f"≤ ₱{budget_max:,.0f}"
+            print(f"   💰 Budget filter: {len(filtered)} bids ({budget_range})")
+
+        # Filter by keywords in title
+        if keywords:
+            keywords_lower = [k.lower() for k in keywords]
+            def keyword_filter(bid):
+                title = bid.get('title', '').lower()
+                return any(keyword in title for keyword in keywords_lower)
+
+            filtered = [b for b in filtered if keyword_filter(b)]
+            print(f"   🔍 Keyword filter: {len(filtered)} bids (keywords: {', '.join(keywords)})")
+
+        return filtered
+
+    async def run_daily_scrape(
+        self,
+        max_pages: Optional[int] = None,
+        fetch_details: bool = True,
+        filters: Optional[Dict] = None
+    ) -> Dict:
         """
         Main method to run daily scraping job
 
         Args:
             max_pages: Optional limit on pages to scrape
             fetch_details: Whether to fetch detailed information
+            filters: Optional dict with filter criteria:
+                - date_from: str (YYYY-MM-DD)
+                - date_to: str (YYYY-MM-DD)
+                - classifications: List[str]
+                - budget_min: float
+                - budget_max: float
+                - keywords: List[str]
 
         Returns:
             Dictionary with scraping results and statistics
@@ -411,6 +528,21 @@ class PhilGEPSScraper:
                     'error': 'No bids found in list',
                     'total_bids': 0
                 }
+
+            # Apply filters if provided (before fetching details to save time)
+            if filters:
+                print(f"\n🔍 Applying filters to {len(bid_list)} bids...")
+                bid_list = self.filter_bids(bid_list, **filters)
+
+                if not bid_list:
+                    print("⚠️  No bids match the filters!")
+                    return {
+                        'success': True,
+                        'total_bids': 0,
+                        'detailed_bids': 0,
+                        'saved_count': 0,
+                        'filtered_out': True
+                    }
 
             result = {
                 'success': True,
