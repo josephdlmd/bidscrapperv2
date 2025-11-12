@@ -109,16 +109,26 @@ class SimplePhilGEPSScraper:
                 print("✅ Credentials pre-filled")
 
                 # Click reCAPTCHA checkbox
-                self.page.wait_for_timeout(1000)  # Wait 1 second
+                self.page.wait_for_timeout(2000)  # Wait 2 seconds for iframe to load
 
-                # Click the reCAPTCHA iframe checkbox
-                recaptcha_frame = self.page.frame(name='a-' + self.page.frames[1].name.split('-')[1]) if len(self.page.frames) > 1 else None
-                if recaptcha_frame:
-                    recaptcha_frame.click('.recaptcha-checkbox-border')
-                else:
-                    self.page.click('.recaptcha-checkbox-border')
+                # Find and click reCAPTCHA checkbox in iframe
+                frames = self.page.frames
+                recaptcha_clicked = False
 
-                print("✅ Clicked reCAPTCHA checkbox")
+                for frame in frames:
+                    try:
+                        # Try to find checkbox in this frame
+                        checkbox = frame.locator('.recaptcha-checkbox-border').first
+                        if checkbox.is_visible():
+                            checkbox.click()
+                            recaptcha_clicked = True
+                            print("✅ Clicked reCAPTCHA checkbox")
+                            break
+                    except:
+                        continue
+
+                if not recaptcha_clicked:
+                    print("⚠️ Could not auto-click reCAPTCHA - please click it manually")
 
                 # Wait for reCAPTCHA to auto-validate (usually 2-3 seconds)
                 self.page.wait_for_timeout(4000)
