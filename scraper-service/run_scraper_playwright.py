@@ -20,7 +20,7 @@ os.environ['PHILGEPS_USERNAME'] = 'jdeleon60'
 os.environ['PHILGEPS_PASSWORD'] = 'Merritmed#01'
 os.environ['DATABASE_URL'] = 'sqlite:///philgeps_local.db'
 
-async def main(max_pages=None, fetch_details=True, filters=None):
+async def main(max_pages=None, fetch_details=True, filters=None, skip_existing=False, incremental=False):
     print("="*80)
     print("PhilGEPS Scraper V2 - Automated Run (Playwright)")
     print("="*80)
@@ -48,6 +48,8 @@ async def main(max_pages=None, fetch_details=True, filters=None):
         print("\n📋 Scraper Configuration:")
         print(f"   Max Pages: {'All pages' if max_pages is None else max_pages}")
         print(f"   Fetch Details: {'Yes' if fetch_details else 'No (list only)'}")
+        print(f"   Skip Existing: {'Yes' if skip_existing else 'No'}")
+        print(f"   Incremental Mode: {'Yes (only new bids)' if incremental else 'No'}")
         print("   Database: philgeps_local.db")
 
         if filters:
@@ -68,7 +70,9 @@ async def main(max_pages=None, fetch_details=True, filters=None):
         result = await scraper.run_daily_scrape(
             max_pages=max_pages,
             fetch_details=fetch_details,
-            filters=filters
+            filters=filters,
+            skip_existing=skip_existing,
+            incremental=incremental
         )
 
         print("\n" + "="*80)
@@ -113,6 +117,12 @@ Examples:
 
   python run_scraper_playwright.py --keywords laptop computer --classification Goods
     # Scrape Goods bids containing 'laptop' or 'computer'
+
+  python run_scraper_playwright.py --incremental
+    # Daily run: only scrape new bids (efficient for scheduled jobs)
+
+  python run_scraper_playwright.py --skip-existing
+    # Re-scrape all pages but skip details for existing bids
         """
     )
     # Scraping options
@@ -122,6 +132,10 @@ Examples:
                        help='Scrape first N pages (default: all pages)')
     parser.add_argument('--no-details', action='store_true',
                        help='Skip detail scraping (faster, no budgets)')
+    parser.add_argument('--skip-existing', action='store_true',
+                       help='Skip fetching details for bids already in database')
+    parser.add_argument('--incremental', action='store_true',
+                       help='Only scrape new bids (not in database yet)')
 
     # Filter options
     parser.add_argument('--date-from', type=str, metavar='YYYY-MM-DD',
@@ -171,5 +185,7 @@ Examples:
     asyncio.run(main(
         max_pages=max_pages,
         fetch_details=not args.no_details,
-        filters=filters if filters else None
+        filters=filters if filters else None,
+        skip_existing=args.skip_existing,
+        incremental=args.incremental
     ))

@@ -497,7 +497,9 @@ class PhilGEPSScraper:
         self,
         max_pages: Optional[int] = None,
         fetch_details: bool = True,
-        filters: Optional[Dict] = None
+        filters: Optional[Dict] = None,
+        skip_existing: bool = False,
+        incremental: bool = False
     ) -> Dict:
         """
         Main method to run daily scraping job
@@ -512,6 +514,8 @@ class PhilGEPSScraper:
                 - budget_min: float
                 - budget_max: float
                 - keywords: List[str]
+            skip_existing: Skip fetching details for bids already in database
+            incremental: Only scrape new bids (not already in database)
 
         Returns:
             Dictionary with scraping results and statistics
@@ -528,6 +532,24 @@ class PhilGEPSScraper:
                     'error': 'No bids found in list',
                     'total_bids': 0
                 }
+
+            # Incremental mode: filter out existing bids
+            if incremental:
+                existing_refs = self.get_existing_bid_refs()
+                before_count = len(bid_list)
+                bid_list = [b for b in bid_list if b['reference_number'] not in existing_refs]
+                filtered_count = before_count - len(bid_list)
+                print(f"\n🔄 Incremental mode: Skipped {filtered_count} existing bids, {len(bid_list)} new")
+
+                if not bid_list:
+                    print("✅ No new bids to scrape!")
+                    return {
+                        'success': True,
+                        'total_bids': 0,
+                        'detailed_bids': 0,
+                        'saved_count': 0,
+                        'skipped_existing': filtered_count
+                    }
 
             # Apply filters if provided (before fetching details to save time)
             if filters:
@@ -549,6 +571,7 @@ class PhilGEPSScraper:
                 'total_bids': len(bid_list),
                 'detailed_bids': 0,
                 'saved_count': 0,
+                'skipped': 0,
                 'start_time': start_time.isoformat(),
                 'end_time': None
             }
@@ -558,7 +581,13 @@ class PhilGEPSScraper:
                 print(f"\n📋 PHASE 2: Fetching details for {len(bid_list)} bids...")
 
                 for idx, bid in enumerate(bid_list, 1):
-                    print(f"\n[{idx}/{len(bid_list)}] Fetching details for bid #{bid['reference_number']}...")
+                    print(f"\n[{idx}/{len(bid_list)}] Processing bid #{bid['reference_number']}...")
+
+                    # Skip existing bids if skip_existing is True
+                    if skip_existing and self.bid_exists(bid['reference_number']):
+                        print(f"   ⏭️  Already in database, skipping...")
+                        result['skipped'] += 1
+                        continue
 
                     detail = await self.scrape_bid_detail(
                         bid['reference_number'],
