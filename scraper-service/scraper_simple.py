@@ -1,7 +1,7 @@
 """
-Simplified PhilGEPS Scraper using SQLite for local testing
+Working PhilGEPS Scraper using Playwright (SQLite)
 """
-from scrapling import StealthyFetcher
+from playwright.sync_api import sync_playwright
 import sqlite3
 import os
 from pathlib import Path
@@ -18,11 +18,9 @@ class SimplePhilGEPSScraper:
         self.profile_dir = Path(profile_dir)
         self.profile_dir.mkdir(exist_ok=True)
 
-        self.fetcher = StealthyFetcher(
-            user_data_dir=str(self.profile_dir)
-        )
-        self.cookies = None
-        self.logged_in = False
+        self.browser = None
+        self.context = None
+        self.page = None
 
         print(f"🔧 Initialized scraper")
         print(f"   Database: {os.path.abspath(db_path)}")
@@ -73,109 +71,115 @@ class SimplePhilGEPSScraper:
         print("4. Come back here and press ENTER")
         print("="*60 + "\n")
 
-        page = self.fetcher.get(
-            "https://philgeps.gov.ph/Indexes/login",
-            headless=False,
-            timeout=300
-        )
+        with sync_playwright() as p:
+            # Launch browser with persistent context
+            self.context = p.chromium.launch_persistent_context(
+                user_data_dir=str(self.profile_dir),
+                headless=False,
+                args=['--disable-blink-features=AutomationControlled']
+            )
 
-        # Pre-fill credentials
-        try:
-            username_field = page.css('input[name="username"], input#username')
-            password_field = page.css('input[name="password"], input#password')
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
-            if username_field.exists():
-                username_field.fill(os.getenv('PHILGEPS_USERNAME'))
-            if password_field.exists():
-                password_field.fill(os.getenv('PHILGEPS_PASSWORD'))
+            # Go to login page
+            self.page.goto("https://philgeps.gov.ph/Indexes/login", timeout=60000)
 
-            print("✅ Credentials pre-filled")
-        except Exception as e:
-            print(f"⚠️ Could not pre-fill credentials: {e}")
+            # Pre-fill credentials
+            try:
+                # Select "Merchant" from dropdown
+                self.page.select_option('select[name="userType"], select#userType', 'Merchant')
+                print("✅ Selected Merchant")
 
-        input("\n👉 Press ENTER after you've successfully logged in...")
+                username = os.getenv('PHILGEPS_USERNAME', 'jdeleon60')
+                password = os.getenv('PHILGEPS_PASSWORD', 'Merritmed#01')
 
-        self.cookies = page.cookies
-        self.logged_in = True
+                self.page.fill('input[name="username"], input#username', username)
+                self.page.fill('input[name="password"], input#password', password)
+                print("✅ Credentials pre-filled")
+            except Exception as e:
+                print(f"⚠️ Could not pre-fill: {e}")
 
-        print("✅ Login session saved!")
+            input("\n👉 Press ENTER after you've successfully logged in...")
+
+            print("✅ Login session saved in browser profile!")
+
+            self.context.close()
+
         return True
 
     def scrape_opportunities(self) -> List[Dict]:
         """Scrape bid opportunities"""
-        if not self.logged_in:
-            print("⚠️ Not logged in. Running manual login...")
-            self.login_manual()
-
         print("\n📥 Scraping PhilGEPS current opportunities...")
 
-        page = self.fetcher.get(
-            "https://philgeps.gov.ph/BulletinBoard/current_oppourtunities",
-            cookies=self.cookies,
-            timeout=60
-        )
-
-        # Check if still logged in
-        if 'login' in page.url.lower():
-            print("❌ Session expired - need to login again")
-            self.logged_in = False
-            self.login_manual()
-            page = self.fetcher.get(
-                "https://philgeps.gov.ph/BulletinBoard/current_oppourtunities",
-                cookies=self.cookies
-            )
-
-        # Extract bids
         bids = []
 
-        try:
-            rows = page.css('tr.opportunity-row, tbody tr').get_all()
-            print(f"Found {len(rows)} potential bid rows")
+        with sync_playwright() as p:
+            # Launch with persistent context (has login session)
+            self.context = p.chromium.launch_persistent_context(
+                user_data_dir=str(self.profile_dir),
+                headless=False
+            )
 
-            for idx, row in enumerate(rows):
-                try:
-                    bid = {
-                        'reference_number': self._extract_text(row, '.ref-number, td:nth-child(1)'),
-                        'title': self._extract_text(row, '.title, td:nth-child(2)'),
-                        'budget': self._parse_budget(
-                            self._extract_text(row, '.budget, .abc, td:nth-child(3)')
-                        ),
-                        'closing_date': self._parse_date(
-                            self._extract_text(row, '.closing-date, .deadline, td:nth-child(4)')
-                        ),
-                        'procuring_entity': self._extract_text(row, '.agency, .entity, td:nth-child(5)'),
-                        'area_of_delivery': self._extract_text(row, '.location, .area, td:nth-child(6)'),
-                        'category': self._extract_text(row, '.category, td:nth-child(7)'),
-                        'procurement_mode': self._extract_text(row, '.procurement-mode, td:nth-child(8)'),
-                        'scraped_at': datetime.now().isoformat(),
-                        'source_url': 'https://philgeps.gov.ph/BulletinBoard/current_oppourtunities'
-                    }
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
-                    if bid['reference_number']:
-                        bids.append(bid)
+            try:
+                # Go to opportunities page
+                self.page.goto(
+                    "https://philgeps.gov.ph/BulletinBoard/current_oppourtunities",
+                    timeout=60000,
+                    wait_until="networkidle"
+                )
 
-                except Exception as e:
-                    print(f"⚠️ Error parsing row {idx}: {e}")
-                    continue
+                # Check if still logged in
+                if 'login' in self.page.url.lower():
+                    print("❌ Session expired - need to login again")
+                    self.context.close()
+                    return []
 
-            print(f"✅ Successfully parsed {len(bids)} bid opportunities")
+                # Wait for content to load
+                self.page.wait_for_timeout(3000)
 
-        except Exception as e:
-            print(f"❌ Error during scraping: {e}")
+                # Get page HTML for debugging
+                html_content = self.page.content()
+
+                # Try to find table rows
+                rows = self.page.query_selector_all('tr, tbody tr')
+                print(f"Found {len(rows)} potential bid rows")
+
+                for idx, row in enumerate(rows):
+                    try:
+                        cells = row.query_selector_all('td')
+
+                        if len(cells) >= 3:  # At least 3 columns
+                            bid = {
+                                'reference_number': cells[0].inner_text().strip() if len(cells) > 0 else '',
+                                'title': cells[1].inner_text().strip() if len(cells) > 1 else '',
+                                'budget': self._parse_budget(cells[2].inner_text().strip() if len(cells) > 2 else ''),
+                                'closing_date': cells[3].inner_text().strip() if len(cells) > 3 else '',
+                                'procuring_entity': cells[4].inner_text().strip() if len(cells) > 4 else '',
+                                'area_of_delivery': cells[5].inner_text().strip() if len(cells) > 5 else '',
+                                'category': cells[6].inner_text().strip() if len(cells) > 6 else '',
+                                'procurement_mode': cells[7].inner_text().strip() if len(cells) > 7 else '',
+                                'scraped_at': datetime.now().isoformat(),
+                                'source_url': 'https://philgeps.gov.ph/BulletinBoard/current_oppourtunities'
+                            }
+
+                            if bid['reference_number']:
+                                bids.append(bid)
+
+                    except Exception as e:
+                        continue
+
+                print(f"✅ Successfully parsed {len(bids)} bid opportunities")
+
+            except Exception as e:
+                print(f"❌ Error during scraping: {e}")
+            finally:
+                self.context.close()
 
         return bids
 
-    def _extract_text(self, element, selector: str) -> Optional[str]:
-        """Extract text from element"""
-        try:
-            result = element.css(selector)
-            if result.exists():
-                return result.text.strip()
-        except:
-            pass
-        return None
-
-    def _parse_budget(self, budget_str: Optional[str]) -> Optional[float]:
+    def _parse_budget(self, budget_str: str) -> Optional[float]:
         """Parse budget string to float"""
         if not budget_str:
             return None
@@ -184,17 +188,6 @@ class SimplePhilGEPSScraper:
             return float(cleaned) if cleaned else None
         except:
             return None
-
-    def _parse_date(self, date_str: Optional[str]) -> Optional[str]:
-        """Parse date string"""
-        if not date_str:
-            return None
-        try:
-            from dateutil import parser
-            dt = parser.parse(date_str)
-            return dt.isoformat()
-        except:
-            return date_str
 
     def save_to_database(self, bids: List[Dict]) -> int:
         """Save bids to SQLite"""
@@ -272,17 +265,9 @@ class SimplePhilGEPSScraper:
                 'timestamp': datetime.now().isoformat()
             }
 
-    def close(self):
-        """Cleanup"""
-        if self.fetcher:
-            self.fetcher.close()
-
 
 # Quick test
 if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv('.env.local')
-
     scraper = SimplePhilGEPSScraper()
 
     print("="*60)
@@ -297,5 +282,5 @@ if __name__ == "__main__":
         scraper.login_manual()
     elif choice == "2":
         scraper.run_scrape()
-
-    scraper.close()
+    else:
+        print("Invalid choice")
