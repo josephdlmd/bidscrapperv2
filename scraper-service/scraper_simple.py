@@ -72,11 +72,18 @@ class SimplePhilGEPSScraper:
         print("="*60 + "\n")
 
         with sync_playwright() as p:
-            # Launch browser with persistent context
+            # Launch browser with persistent context and anti-detection
             self.context = p.chromium.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
                 headless=False,
-                args=['--disable-blink-features=AutomationControlled']
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process'
+                ],
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
 
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
@@ -103,28 +110,31 @@ class SimplePhilGEPSScraper:
 
                 # Click reCAPTCHA checkbox
                 self.page.wait_for_timeout(1000)  # Wait 1 second
-                self.page.click('.recaptcha-checkbox-border')
+
+                # Click the reCAPTCHA iframe checkbox
+                recaptcha_frame = self.page.frame(name='a-' + self.page.frames[1].name.split('-')[1]) if len(self.page.frames) > 1 else None
+                if recaptcha_frame:
+                    recaptcha_frame.click('.recaptcha-checkbox-border')
+                else:
+                    self.page.click('.recaptcha-checkbox-border')
+
                 print("✅ Clicked reCAPTCHA checkbox")
 
-                # Wait a bit for reCAPTCHA to process
-                self.page.wait_for_timeout(2000)
+                # Wait for reCAPTCHA to auto-validate (usually 2-3 seconds)
+                self.page.wait_for_timeout(4000)
+                print("✅ reCAPTCHA validated")
 
-            except Exception as e:
-                print(f"⚠️ Could not pre-fill: {e}")
-
-            print("\n⏳ Waiting for reCAPTCHA verification...")
-            print("   If image challenge appears, solve it now")
-            print("   Then the script will auto-click Login")
-
-            input("\n👉 Press ENTER after solving any reCAPTCHA challenge...")
-
-            # Auto-click Login button
-            try:
+                # Auto-click Login button
                 self.page.click('input[type="submit"][value="Log In"]')
                 print("✅ Clicked Login button")
-                self.page.wait_for_timeout(3000)  # Wait for navigation
+
+                # Wait for navigation
+                self.page.wait_for_timeout(5000)
+
             except Exception as e:
-                print(f"⚠️ Could not click login: {e}")
+                print(f"⚠️ Could not complete auto-login: {e}")
+                print("   Please complete login manually and press ENTER")
+                input("\n👉 Press ENTER after you've logged in...")
 
             print("✅ Login session saved in browser profile!")
 
@@ -139,10 +149,16 @@ class SimplePhilGEPSScraper:
         bids = []
 
         with sync_playwright() as p:
-            # Launch with persistent context (has login session)
+            # Launch with persistent context (has login session) and anti-detection
             self.context = p.chromium.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
-                headless=False
+                headless=False,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox'
+                ],
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
 
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
