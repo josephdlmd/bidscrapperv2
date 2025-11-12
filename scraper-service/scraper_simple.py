@@ -84,6 +84,10 @@ class SimplePhilGEPSScraper:
             # Go to login page
             self.page.goto("https://philgeps.gov.ph/Indexes/login", timeout=60000)
 
+            # Refresh page to clear any popups/errors
+            self.page.reload(timeout=60000)
+            print("✅ Page refreshed")
+
             # Pre-fill credentials
             try:
                 # Select "Marchant" from dropdown (note: they spelled it "Marchant")
