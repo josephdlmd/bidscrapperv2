@@ -109,7 +109,7 @@ class SimplePhilGEPSScraper:
                 print("✅ Credentials pre-filled")
 
                 # Click reCAPTCHA checkbox
-                self.page.wait_for_timeout(2000)  # Wait 2 seconds for iframe to load
+                self.page.wait_for_timeout(2000)
 
                 # Find and click reCAPTCHA checkbox in iframe
                 frames = self.page.frames
@@ -117,7 +117,6 @@ class SimplePhilGEPSScraper:
 
                 for frame in frames:
                     try:
-                        # Try to find checkbox in this frame
                         checkbox = frame.locator('.recaptcha-checkbox-border').first
                         if checkbox.is_visible():
                             checkbox.click()
@@ -130,7 +129,7 @@ class SimplePhilGEPSScraper:
                 if not recaptcha_clicked:
                     print("⚠️ Could not auto-click reCAPTCHA - please click it manually")
 
-                # Wait for reCAPTCHA to auto-validate (usually 2-3 seconds)
+                # Wait for reCAPTCHA to auto-validate
                 self.page.wait_for_timeout(4000)
                 print("✅ reCAPTCHA validated")
 
@@ -140,6 +139,14 @@ class SimplePhilGEPSScraper:
 
                 # Wait for navigation
                 self.page.wait_for_timeout(5000)
+
+                # Navigate directly to the bid opportunities page
+                self.page.goto(
+                    "https://philgeps.gov.ph/BulletinBoard/view_more_current_oppourtunities",
+                    timeout=60000,
+                    wait_until="networkidle"
+                )
+                print("✅ Navigated to bid opportunities page")
 
             except Exception as e:
                 print(f"⚠️ Could not complete auto-login: {e}")
@@ -152,9 +159,27 @@ class SimplePhilGEPSScraper:
 
         return True
 
-    def scrape_opportunities(self) -> List[Dict]:
-        """Scrape bid opportunities"""
-        print("\n📥 Scraping PhilGEPS current opportunities...")
+    def scrape_opportunities(self, date_from=None, date_to=None) -> List[Dict]:
+        """
+        Scrape bid opportunities with optional date range
+
+        Args:
+            date_from: Start date (defaults to today)
+            date_to: End date (defaults to tomorrow)
+        """
+        from datetime import datetime, timedelta
+
+        # Default: today to tomorrow
+        if date_from is None:
+            date_from = datetime.now()
+        if date_to is None:
+            date_to = datetime.now() + timedelta(days=1)
+
+        # Format dates as MM/DD/YYYY (PhilGEPS format)
+        date_from_str = date_from.strftime('%m/%d/%Y')
+        date_to_str = date_to.strftime('%m/%d/%Y')
+
+        print(f"\n📥 Scraping PhilGEPS opportunities from {date_from_str} to {date_to_str}...")
 
         bids = []
 
@@ -174,12 +199,41 @@ class SimplePhilGEPSScraper:
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
             try:
-                # Go to opportunities page
+                # Go to the correct opportunities page
                 self.page.goto(
-                    "https://philgeps.gov.ph/BulletinBoard/current_oppourtunities",
+                    "https://philgeps.gov.ph/BulletinBoard/view_more_current_oppourtunities",
                     timeout=60000,
                     wait_until="networkidle"
                 )
+
+                print("✅ Loaded opportunities page")
+
+                # Fill in date range filters
+                try:
+                    # Wait for page to fully load
+                    self.page.wait_for_timeout(2000)
+
+                    # Fill "Publish Date From"
+                    self.page.fill('input#searchPublishDateFrom', date_from_str)
+                    print(f"✅ Set date from: {date_from_str}")
+
+                    # Fill "Publish Date To"
+                    self.page.fill('input#searchPublishDateTo', date_to_str)
+                    print(f"✅ Set date to: {date_to_str}")
+
+                    # Wait a moment for form to register
+                    self.page.wait_for_timeout(1000)
+
+                    # Click the search button
+                    self.page.click('button#search[name="search"]')
+                    print("✅ Clicked search button")
+
+                    # Wait for results to load
+                    self.page.wait_for_timeout(5000)
+
+                except Exception as e:
+                    print(f"⚠️ Could not set date filters: {e}")
+                    print("   Continuing with default date range...")
 
                 # Check if still logged in
                 if 'login' in self.page.url.lower():
