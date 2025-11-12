@@ -72,11 +72,18 @@ class SimplePhilGEPSScraper:
         print("="*60 + "\n")
 
         with sync_playwright() as p:
-            # Launch browser with persistent context
+            # Launch browser with persistent context and anti-detection
             self.context = p.chromium.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
                 headless=False,
-                args=['--disable-blink-features=AutomationControlled']
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process'
+                ],
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
 
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
@@ -84,11 +91,15 @@ class SimplePhilGEPSScraper:
             # Go to login page
             self.page.goto("https://philgeps.gov.ph/Indexes/login", timeout=60000)
 
+            # Refresh page to clear any popups/errors
+            self.page.reload(timeout=60000)
+            print("✅ Page refreshed")
+
             # Pre-fill credentials
             try:
-                # Select "Merchant" from dropdown
-                self.page.select_option('select[name="userType"], select#userType', 'Merchant')
-                print("✅ Selected Merchant")
+                # Select "Marchant" from dropdown (note: they spelled it "Marchant")
+                self.page.select_option('select[name="type"], select#type', 'Marchant')
+                print("✅ Selected Marchant")
 
                 username = os.getenv('PHILGEPS_USERNAME', 'jdeleon60')
                 password = os.getenv('PHILGEPS_PASSWORD', 'Merritmed#01')
@@ -96,10 +107,51 @@ class SimplePhilGEPSScraper:
                 self.page.fill('input[name="username"], input#username', username)
                 self.page.fill('input[name="password"], input#password', password)
                 print("✅ Credentials pre-filled")
-            except Exception as e:
-                print(f"⚠️ Could not pre-fill: {e}")
 
-            input("\n👉 Press ENTER after you've successfully logged in...")
+                # Click reCAPTCHA checkbox
+                self.page.wait_for_timeout(2000)
+
+                # Find and click reCAPTCHA checkbox in iframe
+                frames = self.page.frames
+                recaptcha_clicked = False
+
+                for frame in frames:
+                    try:
+                        checkbox = frame.locator('.recaptcha-checkbox-border').first
+                        if checkbox.is_visible():
+                            checkbox.click()
+                            recaptcha_clicked = True
+                            print("✅ Clicked reCAPTCHA checkbox")
+                            break
+                    except:
+                        continue
+
+                if not recaptcha_clicked:
+                    print("⚠️ Could not auto-click reCAPTCHA - please click it manually")
+
+                # Wait for reCAPTCHA to auto-validate
+                self.page.wait_for_timeout(4000)
+                print("✅ reCAPTCHA validated")
+
+                # Auto-click Login button
+                self.page.click('input[type="submit"][value="Log In"]')
+                print("✅ Clicked Login button")
+
+                # Wait for navigation
+                self.page.wait_for_timeout(5000)
+
+                # Navigate directly to the bid opportunities page
+                self.page.goto(
+                    "https://philgeps.gov.ph/BulletinBoard/view_more_current_oppourtunities",
+                    timeout=60000,
+                    wait_until="networkidle"
+                )
+                print("✅ Navigated to bid opportunities page")
+
+            except Exception as e:
+                print(f"⚠️ Could not complete auto-login: {e}")
+                print("   Please complete login manually and press ENTER")
+                input("\n👉 Press ENTER after you've logged in...")
 
             print("✅ Login session saved in browser profile!")
 
@@ -107,28 +159,81 @@ class SimplePhilGEPSScraper:
 
         return True
 
-    def scrape_opportunities(self) -> List[Dict]:
-        """Scrape bid opportunities"""
-        print("\n📥 Scraping PhilGEPS current opportunities...")
+    def scrape_opportunities(self, date_from=None, date_to=None) -> List[Dict]:
+        """
+        Scrape bid opportunities with optional date range
+
+        Args:
+            date_from: Start date (defaults to today)
+            date_to: End date (defaults to tomorrow)
+        """
+        from datetime import datetime, timedelta
+
+        # Default: today to tomorrow
+        if date_from is None:
+            date_from = datetime.now()
+        if date_to is None:
+            date_to = datetime.now() + timedelta(days=1)
+
+        # Format dates as MM/DD/YYYY (PhilGEPS format)
+        date_from_str = date_from.strftime('%m/%d/%Y')
+        date_to_str = date_to.strftime('%m/%d/%Y')
+
+        print(f"\n📥 Scraping PhilGEPS opportunities from {date_from_str} to {date_to_str}...")
 
         bids = []
 
         with sync_playwright() as p:
-            # Launch with persistent context (has login session)
+            # Launch with persistent context (has login session) and anti-detection
             self.context = p.chromium.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
-                headless=False
+                headless=False,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox'
+                ],
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
 
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
             try:
-                # Go to opportunities page
+                # Go to the correct opportunities page
                 self.page.goto(
-                    "https://philgeps.gov.ph/BulletinBoard/current_oppourtunities",
+                    "https://philgeps.gov.ph/BulletinBoard/view_more_current_oppourtunities",
                     timeout=60000,
                     wait_until="networkidle"
                 )
+
+                print("✅ Loaded opportunities page")
+
+                # Fill in date range filters
+                try:
+                    # Wait for page to fully load
+                    self.page.wait_for_timeout(2000)
+
+                    # Fill "Publish Date From"
+                    self.page.fill('input#searchPublishDateFrom', date_from_str)
+                    print(f"✅ Set date from: {date_from_str}")
+
+                    # Fill "Publish Date To"
+                    self.page.fill('input#searchPublishDateTo', date_to_str)
+                    print(f"✅ Set date to: {date_to_str}")
+
+                    # Wait a moment for form to register
+                    self.page.wait_for_timeout(1000)
+
+                    # Click the search button
+                    self.page.click('button#search[name="search"]')
+                    print("✅ Clicked search button")
+
+                    # Wait for results to load
+                    self.page.wait_for_timeout(5000)
+
+                except Exception as e:
+                    print(f"⚠️ Could not set date filters: {e}")
+                    print("   Continuing with default date range...")
 
                 # Check if still logged in
                 if 'login' in self.page.url.lower():
