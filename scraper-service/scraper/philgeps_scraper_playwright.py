@@ -4,13 +4,13 @@ Scrapes bid opportunities from PhilGEPS with reCAPTCHA handling
 """
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-import asyncpg
 import asyncio
 import os
 import json
+import sqlite3
 from pathlib import Path
-from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple
 import re
 
 
@@ -20,12 +20,13 @@ class PhilGEPSScraper:
     Uses persistent browser profile to maintain trust and avoid CAPTCHA challenges
     """
 
-    def __init__(self, profile_dir: str = "./browser_profile"):
+    def __init__(self, profile_dir: str = "./browser_profile", db_path: str = "./philgeps_local.db"):
         """
         Initialize scraper with persistent browser profile
 
         Args:
             profile_dir: Directory to store browser profile data
+            db_path: Path to SQLite database
         """
         self.profile_dir = Path(profile_dir)
         self.profile_dir.mkdir(exist_ok=True)
@@ -35,7 +36,23 @@ class PhilGEPSScraper:
         self.page = None
         self.logged_in = False
 
+        # Database connection
+        self.db_path = db_path
+        self.db_conn = None
+        self._init_database()
+
         print(f"🔧 Initialized scraper with profile: {self.profile_dir}")
+        print(f"🗄️  Database: {self.db_path}")
+
+    def _init_database(self):
+        """Initialize database connection"""
+        try:
+            self.db_conn = sqlite3.connect(self.db_path)
+            self.db_conn.row_factory = sqlite3.Row  # Access columns by name
+            print("✅ Database connected")
+        except Exception as e:
+            print(f"⚠️  Database connection error: {e}")
+            self.db_conn = None
 
     async def _ensure_browser(self):
         """Ensure browser context is initialized"""
@@ -371,13 +388,134 @@ class PhilGEPSScraper:
             print(f"   ❌ Error scraping detail for {reference_number}: {e}")
             return None
 
-    async def run_daily_scrape(self, max_pages: Optional[int] = None, fetch_details: bool = True) -> Dict:
+    def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
+        """Parse date string to datetime object"""
+        if not date_str:
+            return None
+
+        # Try common formats
+        formats = [
+            '%Y-%m-%d',
+            '%m/%d/%Y',
+            '%d/%m/%Y',
+            '%B %d, %Y',
+            '%b %d, %Y',
+            '%Y-%m-%d %H:%M:%S'
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.strptime(date_str.strip(), fmt)
+            except:
+                continue
+        return None
+
+    def filter_bids(
+        self,
+        bids: List[Dict],
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        classifications: Optional[List[str]] = None,
+        budget_min: Optional[float] = None,
+        budget_max: Optional[float] = None,
+        keywords: Optional[List[str]] = None
+    ) -> List[Dict]:
+        """
+        Filter scraped bids based on criteria
+
+        Args:
+            bids: List of bid dictionaries
+            date_from: Filter bids closing after this date (YYYY-MM-DD)
+            date_to: Filter bids closing before this date (YYYY-MM-DD)
+            classifications: List of classifications to include (e.g., ['Goods', 'Civil Works'])
+            budget_min: Minimum budget
+            budget_max: Maximum budget
+            keywords: List of keywords to search in title (case-insensitive)
+
+        Returns:
+            Filtered list of bids
+        """
+        filtered = bids.copy()
+
+        # Filter by closing date range
+        if date_from or date_to:
+            date_from_obj = self._parse_date(date_from) if date_from else None
+            date_to_obj = self._parse_date(date_to) if date_to else None
+
+            def date_filter(bid):
+                closing_date = self._parse_date(bid.get('closing_date'))
+                if not closing_date:
+                    return False
+                if date_from_obj and closing_date < date_from_obj:
+                    return False
+                if date_to_obj and closing_date > date_to_obj:
+                    return False
+                return True
+
+            filtered = [b for b in filtered if date_filter(b)]
+            print(f"   📅 Date filter: {len(filtered)} bids (from {date_from or 'start'} to {date_to or 'end'})")
+
+        # Filter by classification
+        if classifications:
+            classifications_lower = [c.lower() for c in classifications]
+            filtered = [
+                b for b in filtered
+                if b.get('classification') and b['classification'].lower() in classifications_lower
+            ]
+            print(f"   🏷️  Classification filter: {len(filtered)} bids ({', '.join(classifications)})")
+
+        # Filter by budget range
+        if budget_min is not None or budget_max is not None:
+            def budget_filter(bid):
+                budget = bid.get('approved_budget')
+                if budget is None:
+                    return False
+                if budget_min is not None and budget < budget_min:
+                    return False
+                if budget_max is not None and budget > budget_max:
+                    return False
+                return True
+
+            filtered = [b for b in filtered if budget_filter(b)]
+            budget_range = f"₱{budget_min:,.0f} - ₱{budget_max:,.0f}" if budget_min and budget_max else \
+                          f"≥ ₱{budget_min:,.0f}" if budget_min else f"≤ ₱{budget_max:,.0f}"
+            print(f"   💰 Budget filter: {len(filtered)} bids ({budget_range})")
+
+        # Filter by keywords in title
+        if keywords:
+            keywords_lower = [k.lower() for k in keywords]
+            def keyword_filter(bid):
+                title = bid.get('title', '').lower()
+                return any(keyword in title for keyword in keywords_lower)
+
+            filtered = [b for b in filtered if keyword_filter(b)]
+            print(f"   🔍 Keyword filter: {len(filtered)} bids (keywords: {', '.join(keywords)})")
+
+        return filtered
+
+    async def run_daily_scrape(
+        self,
+        max_pages: Optional[int] = None,
+        fetch_details: bool = True,
+        filters: Optional[Dict] = None,
+        skip_existing: bool = False,
+        incremental: bool = False
+    ) -> Dict:
         """
         Main method to run daily scraping job
 
         Args:
             max_pages: Optional limit on pages to scrape
             fetch_details: Whether to fetch detailed information
+            filters: Optional dict with filter criteria:
+                - date_from: str (YYYY-MM-DD)
+                - date_to: str (YYYY-MM-DD)
+                - classifications: List[str]
+                - budget_min: float
+                - budget_max: float
+                - keywords: List[str]
+            skip_existing: Skip fetching details for bids already in database
+            incremental: Only scrape new bids (not already in database)
 
         Returns:
             Dictionary with scraping results and statistics
@@ -395,11 +533,45 @@ class PhilGEPSScraper:
                     'total_bids': 0
                 }
 
+            # Incremental mode: filter out existing bids
+            if incremental:
+                existing_refs = self.get_existing_bid_refs()
+                before_count = len(bid_list)
+                bid_list = [b for b in bid_list if b['reference_number'] not in existing_refs]
+                filtered_count = before_count - len(bid_list)
+                print(f"\n🔄 Incremental mode: Skipped {filtered_count} existing bids, {len(bid_list)} new")
+
+                if not bid_list:
+                    print("✅ No new bids to scrape!")
+                    return {
+                        'success': True,
+                        'total_bids': 0,
+                        'detailed_bids': 0,
+                        'saved_count': 0,
+                        'skipped_existing': filtered_count
+                    }
+
+            # Apply filters if provided (before fetching details to save time)
+            if filters:
+                print(f"\n🔍 Applying filters to {len(bid_list)} bids...")
+                bid_list = self.filter_bids(bid_list, **filters)
+
+                if not bid_list:
+                    print("⚠️  No bids match the filters!")
+                    return {
+                        'success': True,
+                        'total_bids': 0,
+                        'detailed_bids': 0,
+                        'saved_count': 0,
+                        'filtered_out': True
+                    }
+
             result = {
                 'success': True,
                 'total_bids': len(bid_list),
                 'detailed_bids': 0,
                 'saved_count': 0,
+                'skipped': 0,
                 'start_time': start_time.isoformat(),
                 'end_time': None
             }
@@ -409,7 +581,13 @@ class PhilGEPSScraper:
                 print(f"\n📋 PHASE 2: Fetching details for {len(bid_list)} bids...")
 
                 for idx, bid in enumerate(bid_list, 1):
-                    print(f"\n[{idx}/{len(bid_list)}] Fetching details for bid #{bid['reference_number']}...")
+                    print(f"\n[{idx}/{len(bid_list)}] Processing bid #{bid['reference_number']}...")
+
+                    # Skip existing bids if skip_existing is True
+                    if skip_existing and self.bid_exists(bid['reference_number']):
+                        print(f"   ⏭️  Already in database, skipping...")
+                        result['skipped'] += 1
+                        continue
 
                     detail = await self.scrape_bid_detail(
                         bid['reference_number'],
@@ -422,9 +600,27 @@ class PhilGEPSScraper:
                         result['detailed_bids'] += 1
                         print(f"   ✓ Budget: {detail.get('approved_budget', 'N/A')}")
 
+                        # Save line items
+                        if detail.get('line_items'):
+                            self.save_line_items(bid['reference_number'], detail['line_items'])
+
+                    # Save bid to database (whether we got details or not)
+                    if self.save_bid(bid):
+                        result['saved_count'] += 1
+                        print(f"   💾 Saved to database")
+                    else:
+                        print(f"   ⚠️  Failed to save to database")
+
                     await asyncio.sleep(1)  # Rate limiting
+            else:
+                # Even without details, save basic info
+                print(f"\n💾 Saving {len(bid_list)} bids to database...")
+                for bid in bid_list:
+                    if self.save_bid(bid):
+                        result['saved_count'] += 1
 
             result['end_time'] = datetime.now().isoformat()
+            print(f"\n✅ Scraping complete! Saved {result['saved_count']} bids to database")
             return result
 
         except Exception as e:
@@ -436,9 +632,187 @@ class PhilGEPSScraper:
                 'total_bids': 0
             }
 
+    def bid_exists(self, reference_number: str) -> bool:
+        """Check if bid already exists in database"""
+        if not self.db_conn:
+            return False
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM bid_opportunities WHERE reference_number = ?",
+                (reference_number,)
+            )
+            return cursor.fetchone() is not None
+        except Exception as e:
+            print(f"⚠️  Error checking bid existence: {e}")
+            return False
+
+    def save_bid(self, bid: Dict) -> bool:
+        """
+        Save or update bid in database
+
+        Args:
+            bid: Dictionary with bid data
+
+        Returns:
+            bool: True if successful
+        """
+        if not self.db_conn:
+            print("⚠️  No database connection")
+            return False
+
+        try:
+            cursor = self.db_conn.cursor()
+
+            # Check if exists
+            exists = self.bid_exists(bid['reference_number'])
+
+            if exists:
+                # Update existing
+                cursor.execute('''
+                    UPDATE bid_opportunities SET
+                        title = ?,
+                        status = ?,
+                        detail_url = ?,
+                        procurement_mode = ?,
+                        classification = ?,
+                        approved_budget = ?,
+                        publish_date = ?,
+                        closing_date = ?,
+                        agency_name = ?,
+                        delivery_location = ?,
+                        delivery_period = ?,
+                        contact_person = ?,
+                        business_category = ?,
+                        funding_source = ?,
+                        control_number = ?,
+                        scraped_at = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE reference_number = ?
+                ''', (
+                    bid.get('title'),
+                    bid.get('status'),
+                    bid.get('detail_url'),
+                    bid.get('procurement_mode'),
+                    bid.get('classification'),
+                    bid.get('approved_budget'),
+                    bid.get('publish_date'),
+                    bid.get('closing_date'),
+                    bid.get('agency_name'),
+                    bid.get('delivery_location'),
+                    bid.get('delivery_period'),
+                    bid.get('contact_person'),
+                    bid.get('business_category'),
+                    bid.get('funding_source'),
+                    bid.get('control_number'),
+                    datetime.now().isoformat(),
+                    bid['reference_number']
+                ))
+            else:
+                # Insert new
+                cursor.execute('''
+                    INSERT INTO bid_opportunities (
+                        reference_number, title, status, detail_url,
+                        procurement_mode, classification, approved_budget,
+                        publish_date, closing_date, agency_name,
+                        delivery_location, delivery_period, contact_person,
+                        business_category, funding_source, control_number,
+                        scraped_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    bid['reference_number'],
+                    bid.get('title'),
+                    bid.get('status'),
+                    bid.get('detail_url'),
+                    bid.get('procurement_mode'),
+                    bid.get('classification'),
+                    bid.get('approved_budget'),
+                    bid.get('publish_date'),
+                    bid.get('closing_date'),
+                    bid.get('agency_name'),
+                    bid.get('delivery_location'),
+                    bid.get('delivery_period'),
+                    bid.get('contact_person'),
+                    bid.get('business_category'),
+                    bid.get('funding_source'),
+                    bid.get('control_number'),
+                    datetime.now().isoformat()
+                ))
+
+            self.db_conn.commit()
+            return True
+
+        except Exception as e:
+            print(f"⚠️  Error saving bid {bid.get('reference_number')}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def save_line_items(self, reference_number: str, line_items: List[Dict]) -> bool:
+        """
+        Save line items for a bid
+
+        Args:
+            reference_number: Bid reference number
+            line_items: List of line item dictionaries
+
+        Returns:
+            bool: True if successful
+        """
+        if not self.db_conn or not line_items:
+            return False
+
+        try:
+            cursor = self.db_conn.cursor()
+
+            # Delete existing line items for this bid
+            cursor.execute(
+                "DELETE FROM bid_line_items WHERE reference_number = ?",
+                (reference_number,)
+            )
+
+            # Insert new line items
+            for item in line_items:
+                cursor.execute('''
+                    INSERT INTO bid_line_items (
+                        reference_number, unspsc, lot_name,
+                        lot_description, quantity, unit_of_measure
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    reference_number,
+                    item.get('unspsc'),
+                    item.get('lot_name'),
+                    item.get('description'),
+                    item.get('quantity'),
+                    item.get('unit_of_measure')
+                ))
+
+            self.db_conn.commit()
+            return True
+
+        except Exception as e:
+            print(f"⚠️  Error saving line items for {reference_number}: {e}")
+            return False
+
+    def get_existing_bid_refs(self) -> set:
+        """Get set of existing bid reference numbers for incremental updates"""
+        if not self.db_conn:
+            return set()
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("SELECT reference_number FROM bid_opportunities")
+            return {row[0] for row in cursor.fetchall()}
+        except Exception as e:
+            print(f"⚠️  Error getting existing bids: {e}")
+            return set()
+
     def close(self):
         """Close browser and cleanup resources"""
-        # Playwright cleanup happens async, we'll handle it in __del__ or explicit async close
+        if self.db_conn:
+            self.db_conn.close()
+            print("🗄️  Database connection closed")
         print("📌 Scraper session ended (browser profile saved)")
 
     async def async_close(self):
@@ -447,4 +821,7 @@ class PhilGEPSScraper:
             await self.context.close()
         if self.playwright:
             await self.playwright.stop()
+        if self.db_conn:
+            self.db_conn.close()
+            print("🗄️  Database connection closed")
         print("🔒 Browser closed")
