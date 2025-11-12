@@ -152,9 +152,27 @@ class SimplePhilGEPSScraper:
 
         return True
 
-    def scrape_opportunities(self) -> List[Dict]:
-        """Scrape bid opportunities"""
-        print("\n📥 Scraping PhilGEPS current opportunities...")
+    def scrape_opportunities(self, date_from=None, date_to=None) -> List[Dict]:
+        """
+        Scrape bid opportunities with optional date range
+
+        Args:
+            date_from: Start date (defaults to today)
+            date_to: End date (defaults to tomorrow)
+        """
+        from datetime import datetime, timedelta
+
+        # Default: today to tomorrow
+        if date_from is None:
+            date_from = datetime.now()
+        if date_to is None:
+            date_to = datetime.now() + timedelta(days=1)
+
+        # Format dates as MM/DD/YYYY (PhilGEPS format)
+        date_from_str = date_from.strftime('%m/%d/%Y')
+        date_to_str = date_to.strftime('%m/%d/%Y')
+
+        print(f"\n📥 Scraping PhilGEPS opportunities from {date_from_str} to {date_to_str}...")
 
         bids = []
 
@@ -180,6 +198,33 @@ class SimplePhilGEPSScraper:
                     timeout=60000,
                     wait_until="networkidle"
                 )
+
+                print("✅ Loaded opportunities page")
+
+                # Fill in date range filters
+                try:
+                    # Fill "Publish Date From"
+                    self.page.fill('input#searchPublishDateFrom', date_from_str)
+                    print(f"✅ Set date from: {date_from_str}")
+
+                    # Fill "Publish Date To"
+                    self.page.fill('input#searchPublishDateTo', date_to_str)
+                    print(f"✅ Set date to: {date_to_str}")
+
+                    # Submit search (look for search button)
+                    self.page.wait_for_timeout(1000)
+
+                    # Try to find and click search/filter button
+                    try:
+                        self.page.click('button[type="submit"], input[type="submit"], button:has-text("Search")')
+                        print("✅ Clicked search button")
+                        self.page.wait_for_timeout(3000)  # Wait for results
+                    except:
+                        print("⚠️ No search button found - results may auto-update")
+
+                except Exception as e:
+                    print(f"⚠️ Could not set date filters: {e}")
+                    print("   Continuing with default date range...")
 
                 # Check if still logged in
                 if 'login' in self.page.url.lower():
