@@ -18,6 +18,10 @@ browser_profile/
 
 # Logs
 *.log
+logs/
+
+# Reports
+reports/
 
 # IDE
 .vscode/

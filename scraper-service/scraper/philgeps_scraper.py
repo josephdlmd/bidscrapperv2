@@ -11,6 +11,20 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
 import re
+import sys
+import logging
+from collections import defaultdict
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+try:
+    from logging_config import get_scraper_logger, log_exception
+    from report_generator import ReportGenerator, ScrapeStats, BidSummary, ErrorSummary
+    LOGGING_AVAILABLE = True
+except ImportError:
+    LOGGING_AVAILABLE = False
+    print("⚠️ Logging and reporting modules not found - using basic print statements")
 
 
 class PhilGEPSScraper:
@@ -35,7 +49,74 @@ class PhilGEPSScraper:
         self.cookies = None
         self.logged_in = False
 
-        print(f"🔧 Initialized scraper with profile: {self.profile_dir}")
+        # Initialize logging
+        if LOGGING_AVAILABLE:
+            self.logger = get_scraper_logger()
+            self.report_generator = ReportGenerator(self.logger)
+        else:
+            self.logger = None
+            self.report_generator = None
+
+        # Statistics tracking
+        self.stats = {
+            'start_time': None,
+            'end_time': None,
+            'total_pages_scraped': 0,
+            'total_bids_found': 0,
+            'new_bids_added': 0,
+            'existing_bids_updated': 0,
+            'bids_skipped': 0,
+            'errors': defaultdict(int),
+            'error_details': [],
+            'processed_bids': []
+        }
+
+        self._log_info(f"🔧 Initialized scraper with profile: {self.profile_dir}")
+
+    def _log_info(self, message: str):
+        """Log info message to both logger and console"""
+        print(message)
+        if self.logger:
+            self.logger.info(message)
+
+    def _log_warning(self, message: str):
+        """Log warning message to both logger and console"""
+        print(message)
+        if self.logger:
+            self.logger.warning(message)
+
+    def _log_error(self, message: str, exc: Optional[Exception] = None):
+        """Log error message to both logger and console"""
+        print(message)
+        if self.logger:
+            if exc:
+                log_exception(self.logger, message, exc)
+            else:
+                self.logger.error(message)
+
+    def _reset_stats(self):
+        """Reset statistics for new scraping session"""
+        self.stats = {
+            'start_time': datetime.now(),
+            'end_time': None,
+            'total_pages_scraped': 0,
+            'total_bids_found': 0,
+            'new_bids_added': 0,
+            'existing_bids_updated': 0,
+            'bids_skipped': 0,
+            'errors': defaultdict(int),
+            'error_details': [],
+            'processed_bids': []
+        }
+
+    def _record_error(self, error_type: str, error_message: str):
+        """Record an error for reporting"""
+        self.stats['errors'][error_type] += 1
+        self.stats['error_details'].append({
+            'type': error_type,
+            'message': error_message,
+            'timestamp': datetime.now().isoformat()
+        })
 
     async def login_manual(self) -> bool:
         """
@@ -273,7 +354,11 @@ class PhilGEPSScraper:
 
             except Exception as e:
                 print(f"   ❌ Error extracting rows: {e}")
+                self._record_error('ExtractionError', f'Error extracting rows from page {current_page}: {str(e)}')
                 break
+
+            # Track page scraped
+            self.stats['total_pages_scraped'] = current_page
 
             # Check if there's a next page
             next_button = page.css('.pagination li.next:not(.disabled)')
@@ -451,7 +536,7 @@ class PhilGEPSScraper:
         except:
             return None
 
-    async def save_to_database(self, bids: List[Dict]) -> int:
+    async def save_to_database(self, bids: List[Dict]) -> Dict[str, int]:
         """
         Save bids to PostgreSQL database with all available fields
 
@@ -459,21 +544,30 @@ class PhilGEPSScraper:
             bids: List of bid dictionaries
 
         Returns:
-            Number of bids saved
+            Dictionary with counts: {'new': N, 'updated': M, 'failed': K}
         """
         if not bids:
-            print("⚠️ No bids to save")
-            return 0
+            self._log_warning("⚠️ No bids to save")
+            return {'new': 0, 'updated': 0, 'failed': 0}
 
-        print(f"\n💾 Saving {len(bids)} bids to database...")
+        self._log_info(f"\n💾 Saving {len(bids)} bids to database...")
 
         conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
 
         try:
-            saved_count = 0
+            new_count = 0
+            updated_count = 0
+            failed_count = 0
 
             for bid in bids:
                 try:
+                    # Check if bid already exists
+                    existing = await conn.fetchrow(
+                        'SELECT reference_number FROM bid_opportunities WHERE reference_number = $1',
+                        bid.get('reference_number')
+                    )
+                    is_new = existing is None
+
                     # Save main bid record
                     await conn.execute('''
                         INSERT INTO bid_opportunities (
@@ -555,41 +649,79 @@ class PhilGEPSScraper:
                                 item.get('unit_of_measure')
                             )
 
-                    saved_count += 1
+                    # Track stats
+                    if is_new:
+                        new_count += 1
+                        self.stats['new_bids_added'] += 1
+                        bid_status = 'new'
+                    else:
+                        updated_count += 1
+                        self.stats['existing_bids_updated'] += 1
+                        bid_status = 'updated'
+
+                    # Record processed bid for report
+                    if LOGGING_AVAILABLE:
+                        self.stats['processed_bids'].append({
+                            'reference_number': bid.get('reference_number'),
+                            'title': bid.get('title', ''),
+                            'classification': bid.get('classification', ''),
+                            'approved_budget': bid.get('approved_budget'),
+                            'closing_date': bid.get('closing_date').isoformat() if bid.get('closing_date') else None,
+                            'agency_name': bid.get('agency_name', ''),
+                            'status': bid_status
+                        })
 
                 except Exception as e:
-                    print(f"⚠️ Error saving bid {bid.get('reference_number')}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    failed_count += 1
+                    error_msg = f"Error saving bid {bid.get('reference_number')}: {str(e)}"
+                    self._log_error(f"⚠️ {error_msg}")
+                    self._record_error('DatabaseError', error_msg)
                     continue
 
-            print(f"✅ Saved {saved_count} bids to database")
-            return saved_count
+            self._log_info(f"✅ Saved {new_count} new + {updated_count} updated = {new_count + updated_count} total bids to database")
+            if failed_count > 0:
+                self._log_warning(f"⚠️ Failed to save {failed_count} bids")
+
+            return {'new': new_count, 'updated': updated_count, 'failed': failed_count}
 
         finally:
             await conn.close()
 
-    async def run_daily_scrape(self, max_pages: Optional[int] = None, fetch_details: bool = True) -> Dict:
+    async def run_daily_scrape(
+        self,
+        max_pages: Optional[int] = None,
+        fetch_details: bool = True,
+        filters: Optional[Dict] = None,
+        generate_report: bool = True
+    ) -> Dict:
         """
         Main method for daily scraping job using two-phase approach
 
         Args:
             max_pages: Optional limit on pages to scrape (None = all pages)
             fetch_details: Whether to fetch detail pages (slower but complete)
+            filters: Dictionary of filters applied (for reporting)
+            generate_report: Whether to generate summary reports
 
         Returns:
             Dictionary with scraping results
         """
-        print("\n" + "="*80)
-        print(f"🚀 DAILY PHILGEPS SCRAPE - {datetime.now()}")
-        print("="*80 + "\n")
+        # Reset and initialize stats
+        self._reset_stats()
+
+        self._log_info("\n" + "="*80)
+        self._log_info(f"🚀 DAILY PHILGEPS SCRAPE - {datetime.now()}")
+        self._log_info("="*80 + "\n")
 
         try:
             # PHASE 1: Build index of all bids
             bid_list = await self.scrape_current_opportunities_list(max_pages=max_pages)
 
+            self.stats['total_bids_found'] = len(bid_list)
+
             if not bid_list:
-                print("⚠️ No bids found in list view")
+                self._log_warning("⚠️ No bids found in list view")
+                self.stats['end_time'] = datetime.now()
                 return {
                     'success': False,
                     'error': 'No bids found',
@@ -599,52 +731,147 @@ class PhilGEPSScraper:
             # PHASE 2: Fetch details for each bid (if enabled)
             detailed_bids = []
             if fetch_details:
-                print(f"\n📥 PHASE 2: Fetching details for {len(bid_list)} bids...")
+                self._log_info(f"\n📥 PHASE 2: Fetching details for {len(bid_list)} bids...")
 
                 for idx, bid in enumerate(bid_list, 1):
                     print(f"\n[{idx}/{len(bid_list)}] Processing {bid['reference_number']}...")
 
-                    detail = await self.scrape_bid_detail(
-                        bid['reference_number'],
-                        bid['detail_url']
-                    )
+                    try:
+                        detail = await self.scrape_bid_detail(
+                            bid['reference_number'],
+                            bid['detail_url']
+                        )
 
-                    if detail:
-                        # Merge list data with detail data
-                        merged = {**bid, **detail}
-                        detailed_bids.append(merged)
-                    else:
-                        # If detail fetch failed, keep the list data
+                        if detail:
+                            # Merge list data with detail data
+                            merged = {**bid, **detail}
+                            detailed_bids.append(merged)
+                        else:
+                            # If detail fetch failed, keep the list data
+                            detailed_bids.append(bid)
+                            self._record_error('DetailFetchError', f'Failed to fetch details for {bid["reference_number"]}')
+
+                    except Exception as e:
+                        self._log_error(f"Error processing bid {bid['reference_number']}", e)
+                        self._record_error('ProcessingError', f'Error processing {bid["reference_number"]}: {str(e)}')
                         detailed_bids.append(bid)
 
-                print(f"\n✅ PHASE 2 Complete: Retrieved details for {len(detailed_bids)} bids")
+                self._log_info(f"\n✅ PHASE 2 Complete: Retrieved details for {len(detailed_bids)} bids")
             else:
                 detailed_bids = bid_list
 
             # Save to database
-            saved_count = await self.save_to_database(detailed_bids)
+            save_result = await self.save_to_database(detailed_bids)
+
+            # End time for stats
+            self.stats['end_time'] = datetime.now()
+
+            # Calculate duration
+            duration_seconds = (self.stats['end_time'] - self.stats['start_time']).total_seconds()
+
+            # Calculate success rate
+            total_errors = sum(self.stats['errors'].values())
+            total_operations = len(bid_list)
+            success_rate = ((total_operations - total_errors) / total_operations * 100) if total_operations > 0 else 0
+
+            # Generate reports if enabled and logging available
+            report_files = {}
+            if generate_report and LOGGING_AVAILABLE and self.report_generator:
+                try:
+                    self._log_info("\n📊 Generating summary reports...")
+
+                    # Prepare statistics
+                    stats_obj = ScrapeStats(
+                        start_time=self.stats['start_time'].strftime("%Y-%m-%d %H:%M:%S"),
+                        end_time=self.stats['end_time'].strftime("%Y-%m-%d %H:%M:%S"),
+                        duration_seconds=duration_seconds,
+                        total_pages_scraped=self.stats['total_pages_scraped'],
+                        total_bids_found=self.stats['total_bids_found'],
+                        new_bids_added=self.stats['new_bids_added'],
+                        existing_bids_updated=self.stats['existing_bids_updated'],
+                        bids_skipped=self.stats['bids_skipped'],
+                        errors_count=total_errors,
+                        success_rate=success_rate,
+                        filters_applied=filters or {},
+                        scrape_mode='test' if max_pages else 'full'
+                    )
+
+                    # Prepare bid summaries
+                    bid_summaries = []
+                    for bid_data in self.stats['processed_bids']:
+                        bid_summaries.append(BidSummary(
+                            reference_number=bid_data['reference_number'],
+                            title=bid_data['title'],
+                            classification=bid_data['classification'],
+                            approved_budget=bid_data['approved_budget'],
+                            closing_date=bid_data['closing_date'],
+                            agency_name=bid_data['agency_name'],
+                            status=bid_data['status']
+                        ))
+
+                    # Prepare error summaries
+                    error_summaries = []
+                    for error_type, count in self.stats['errors'].items():
+                        # Find first and last occurrence
+                        occurrences = [e for e in self.stats['error_details'] if e['type'] == error_type]
+                        if occurrences:
+                            first_occurrence = occurrences[0]['timestamp']
+                            last_occurrence = occurrences[-1]['timestamp']
+                            error_message = occurrences[0]['message']
+
+                            error_summaries.append(ErrorSummary(
+                                error_type=error_type,
+                                error_message=error_message,
+                                count=count,
+                                first_occurrence=first_occurrence,
+                                last_occurrence=last_occurrence
+                            ))
+
+                    # Generate reports in all formats
+                    report_files = self.report_generator.generate_report(
+                        stats=stats_obj,
+                        bids=bid_summaries,
+                        errors=error_summaries,
+                        report_formats=['json', 'html', 'csv']
+                    )
+
+                    self._log_info("✅ Summary reports generated:")
+                    for format_type, file_path in report_files.items():
+                        self._log_info(f"   {format_type.upper()}: {file_path}")
+
+                except Exception as e:
+                    self._log_error("Failed to generate reports", e)
 
             result = {
                 'success': True,
                 'total_bids': len(bid_list),
                 'detailed_bids': len(detailed_bids),
-                'saved_count': saved_count,
+                'new_bids': save_result['new'],
+                'updated_bids': save_result['updated'],
+                'failed_bids': save_result['failed'],
+                'total_errors': total_errors,
+                'success_rate': success_rate,
+                'duration_seconds': duration_seconds,
+                'report_files': {fmt: str(path) for fmt, path in report_files.items()},
                 'timestamp': datetime.now().isoformat()
             }
 
-            print("\n" + "="*80)
-            print("✅ DAILY SCRAPE COMPLETE")
-            print(f"   Total bids found: {len(bid_list)}")
-            print(f"   Details fetched: {len(detailed_bids)}")
-            print(f"   Saved to database: {saved_count}")
-            print("="*80 + "\n")
+            self._log_info("\n" + "="*80)
+            self._log_info("✅ DAILY SCRAPE COMPLETE")
+            self._log_info(f"   Total bids found: {len(bid_list)}")
+            self._log_info(f"   New bids: {save_result['new']}")
+            self._log_info(f"   Updated bids: {save_result['updated']}")
+            self._log_info(f"   Duration: {duration_seconds:.1f}s")
+            self._log_info(f"   Success rate: {success_rate:.1f}%")
+            self._log_info("="*80 + "\n")
 
             return result
 
         except Exception as e:
-            print(f"\n❌ SCRAPE FAILED: {e}\n")
-            import traceback
-            traceback.print_exc()
+            self.stats['end_time'] = datetime.now()
+            self._log_error(f"\n❌ SCRAPE FAILED: {e}\n", e)
+            self._record_error('CriticalError', str(e))
+
             return {
                 'success': False,
                 'error': str(e),
