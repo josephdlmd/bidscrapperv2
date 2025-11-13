@@ -7,20 +7,35 @@ import json
 from scraper_simple import SimplePhilGEPSScraper
 
 async def main():
+    import os
+    from pathlib import Path
+
     print("\n" + "="*80)
     print("🚀 QUICK TEST SCRAPE - 1 PAGE FROM PHILGEPS")
     print("="*80 + "\n")
+
+    # Check if browser profile exists
+    profile_exists = Path('browser_profile').exists()
+    if profile_exists:
+        print("✅ Browser profile found - Automated login should work!")
+        print("   (No CAPTCHA expected)\n")
+    else:
+        print("📝 No browser profile found - First time login")
+        print("   (CAPTCHA will be required to build trust)\n")
 
     # Create scraper
     scraper = SimplePhilGEPSScraper(db_path='philgeps_local.db')
 
     try:
-        # Login (manual for first time)
+        # Login (tries automated first, falls back to manual if needed)
         print("📝 Logging in to PhilGEPS...")
-        print("   This will open a browser window")
-        print("   Please solve the CAPTCHA and login\n")
+        print("   🤖 Attempting AUTOMATED login...")
+        print("   📌 If you have an established browser profile, CAPTCHA should NOT appear!")
+        print("   📌 If this is your first time, browser will open for manual login\n")
 
         await scraper.login()
+
+        print("\n✅ Login successful!")
 
         # Scrape just 1 page
         print("\n📥 Scraping 1 page of bids...")
