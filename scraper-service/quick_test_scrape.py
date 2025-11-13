@@ -2,14 +2,11 @@
 Quick test script to scrape 1 page of real PhilGEPS data
 Uses simplified scraper with SQLite support
 """
-import asyncio
 import json
 from scraper_simple import SimplePhilGEPSScraper
+from pathlib import Path
 
-async def main():
-    import os
-    from pathlib import Path
-
+def main():
     print("\n" + "="*80)
     print("🚀 QUICK TEST SCRAPE - 1 PAGE FROM PHILGEPS")
     print("="*80 + "\n")
@@ -33,13 +30,19 @@ async def main():
         print("   📌 If you have an established browser profile, CAPTCHA should NOT appear!")
         print("   📌 If this is your first time, browser will open for manual login\n")
 
-        await scraper.login()
+        scraper.login_manual()
 
         print("\n✅ Login successful!")
 
         # Scrape just 1 page
         print("\n📥 Scraping 1 page of bids...")
-        bids = await scraper.scrape_opportunities(max_pages=1)
+
+        # Note: scrape_opportunities doesn't have max_pages, we'll modify the method call
+        from datetime import datetime, timedelta
+        bids = scraper.scrape_opportunities(
+            date_from=datetime.now(),
+            date_to=datetime.now() + timedelta(days=30)
+        )
 
         print(f"\n✅ Found {len(bids)} bids on first page")
 
@@ -78,8 +81,5 @@ async def main():
         import traceback
         traceback.print_exc()
 
-    finally:
-        scraper.close()
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
