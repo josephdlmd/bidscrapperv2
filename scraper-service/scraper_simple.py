@@ -160,13 +160,27 @@ class SimplePhilGEPSScraper:
                 )
                 print("✅ Navigated to bid opportunities page")
 
+                # IMPORTANT: Wait longer to ensure session is fully established
+                # This helps PhilGEPS recognize the session as legitimate
+                print("⏳ Waiting to ensure session is saved...")
+                self.page.wait_for_timeout(3000)
+
             except Exception as e:
                 print(f"⚠️ Could not complete auto-login: {e}")
                 print("   Please complete login manually and press ENTER")
                 input("\n👉 Press ENTER after you've logged in...")
 
+            # Verify we're still on the opportunities page (not redirected to login)
+            current_url = self.page.url
+            if 'login' in current_url.lower():
+                print("⚠️ Warning: Session may not be saved - still on login page")
+            else:
+                print(f"✅ Session established - Current page: {current_url}")
+
             print("✅ Login session saved in browser profile!")
 
+            # Give extra time before closing to ensure persistent context saves everything
+            self.page.wait_for_timeout(2000)
             self.context.close()
 
         return True
@@ -248,10 +262,17 @@ class SimplePhilGEPSScraper:
                     print("   Continuing with default date range...")
 
                 # Check if still logged in
-                if 'login' in self.page.url.lower():
-                    print("❌ Session expired - need to login again")
+                current_url = self.page.url
+                page_content = self.page.content()
+
+                if 'login' in current_url.lower() or 'login' in page_content.lower():
+                    print("❌ Session expired or logged out - need to login again")
+                    print(f"   Current URL: {current_url}")
+                    print("   Tip: Run login_manual() again or check if PhilGEPS blocked the session")
                     self.context.close()
                     return []
+
+                print(f"✅ Session valid - On page: {current_url}")
 
                 # Wait for content to load
                 self.page.wait_for_timeout(3000)
