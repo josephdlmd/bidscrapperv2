@@ -81,5 +81,9 @@ def main():
         import traceback
         traceback.print_exc()
 
+    finally:
+        # Close the browser when done
+        scraper.close()
+
 if __name__ == "__main__":
     main()

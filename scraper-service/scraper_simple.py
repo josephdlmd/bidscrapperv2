@@ -179,9 +179,8 @@ class SimplePhilGEPSScraper:
 
             print("✅ Login session saved in browser profile!")
 
-            # Give extra time before closing to ensure persistent context saves everything
-            self.page.wait_for_timeout(2000)
-            self.context.close()
+            # DON'T CLOSE THE BROWSER - Keep it open for scraping!
+            print("🌐 Browser session kept alive for scraping...")
 
         return True
 
@@ -209,21 +208,9 @@ class SimplePhilGEPSScraper:
 
         bids = []
 
-        with sync_playwright() as p:
-            # Launch with persistent context (has login session) and anti-detection
-            self.context = p.chromium.launch_persistent_context(
-                user_data_dir=str(self.profile_dir),
-                headless=False,
-                args=[
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-dev-shm-usage',
-                    '--no-sandbox'
-                ],
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
-
-            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
-
+        # Check if we already have an open browser from login
+        if self.context and self.page:
+            print("✅ Reusing existing browser session from login")
             try:
                 # Go to the correct opportunities page
                 self.page.goto(
@@ -312,10 +299,20 @@ class SimplePhilGEPSScraper:
 
             except Exception as e:
                 print(f"❌ Error during scraping: {e}")
-            finally:
-                self.context.close()
+            # DON'T close context here - let the user call close() when done
+
+        else:
+            print("⚠️ No existing browser session - please run login_manual() first!")
 
         return bids
+
+    def close(self):
+        """Close the browser context"""
+        if self.context:
+            print("🔚 Closing browser...")
+            self.context.close()
+            self.context = None
+            self.page = None
 
     def _parse_budget(self, budget_str: str) -> Optional[float]:
         """Parse budget string to float"""
