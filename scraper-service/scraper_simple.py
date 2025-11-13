@@ -34,6 +34,18 @@ class SimplePhilGEPSScraper:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
+        # Check if table exists and has correct schema
+        try:
+            cursor.execute("PRAGMA table_info(bid_opportunities)")
+            columns = [row[1] for row in cursor.fetchall()]
+
+            # If table exists but doesn't have 'category' column, drop it
+            if columns and 'category' not in columns:
+                print("⚠️ Old schema detected - dropping table to recreate with correct schema")
+                cursor.execute('DROP TABLE IF EXISTS bid_opportunities')
+        except:
+            pass
+
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS bid_opportunities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
